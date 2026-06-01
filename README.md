@@ -56,13 +56,20 @@ hf download QingyanBai/Ditto_models --include="models/*" --local-dir ./
 #### *Usage*
 
 
-You can either use the provided script or run Python directly:
+To test the local editing model with one command, simply run:
 
 ```bash
-# Option 1: Use the provided script
+# Automatically downloads weights and test data, then runs tests in parallel
+bash infer_local.sh
+```
+
+For general-purpose editing, you can also use the provided script or run Python directly:
+
+```bash
+# Use the provided script
 bash infer.sh
 
-# Option 2: Run Python directly
+# Run Python directly
 python inference/infer_ditto.py \
     --input_video /path/to/input_video.mp4 \
     --output_video /path/to/output_video.mp4 \
@@ -157,11 +164,11 @@ bash run_video_enhancing.sh
 If you find this work useful, please consider citing our paper:
 
 ```bibtex
-@article{bai2025ditto,
-  title={Scaling Instruction-Based Video Editing with a High-Quality Synthetic Dataset},
+@inproceedings{bai2026scaling,
+  title={Scaling instruction-based video editing with a high-quality synthetic dataset},
   author={Bai, Qingyan and Wang, Qiuyu and Ouyang, Hao and Yu, Yue and Wang, Hanlin and Wang, Wen and Cheng, Ka Leong and Ma, Shuailei and Zeng, Yanhong and Liu, Zichen and Xu, Yinghao and Shen, Yujun and Chen, Qifeng},
-  journal={arXiv preprint arXiv:2510.15742},
-  year={2025}
+  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},
+  year={2026}
 }
 ```
 
