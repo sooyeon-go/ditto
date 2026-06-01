@@ -40,7 +40,7 @@ PROMPT_SLUG_LEN=50
 # Prompts to evaluate (order matches data/local_prompts.txt)
 PROMPTS=(
     "Add a vivid rainbow-colored contrail trailing behind the airplane, stretching across the sky"
-    "Change the airplane's body color to bright red"
+    "Change the airplane's body color to bright red with a golden stripe along the fuselag"
     "Change the background to a dramatic sunset sky filled with layers of orange, pink, and purple clouds"
     "Change the background to outer space with stars and the Earth visible below"
     "Remove the plane in the sky"
