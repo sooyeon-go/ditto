@@ -56,12 +56,17 @@ hf download QingyanBai/Ditto_models --include="models/*" --local-dir ./
 #### *Usage*
 
 
+
 To test the local editing model with one command, simply run:
 
 ```bash
 # Automatically downloads weights and test data, then runs tests in parallel
 bash infer_local.sh
 ```
+
+<div align="center">
+  <video src="https://github.com/user-attachments/assets/7e4e41a6-3a2e-4556-ba23-76b653f4538a" width="100%" controls></video>
+</div>
 
 For general-purpose editing, you can also use the provided script or run Python directly:
 
