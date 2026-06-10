@@ -9,7 +9,7 @@ cd "${REPO_ROOT}"
 
 PHYSICS_DIR="/data/shared-vilab/datasets/mj_data/physics_check"
 PROMPT_YAML="/data/shared-vilab/datasets/mj_data/physics_check/prompt.yaml"
-OUTPUT_DIR="${PHYSICS_DIR}/results"
+OUTPUT_DIR="$/data/project-vilab/sy/ditto/pyhsics_results"
 
 # Pretrained model paths
 PRETRAINED_DIR="/data/shared-vilab/pretrained_models"
