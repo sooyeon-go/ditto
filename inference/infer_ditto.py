@@ -9,13 +9,19 @@ def main(args):
 
     device = f"cuda:{args.device_id}"
 
+    model_config_kwargs = {}
+    if args.local_model_path:
+        model_config_kwargs["local_model_path"] = args.local_model_path
+    if args.skip_model_download:
+        model_config_kwargs["skip_download"] = True
+
     pipe = WanVideoPipeline.from_pretrained(
         torch_dtype=torch.bfloat16,
         device=device,
         model_configs=[
-            ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="diffusion_pytorch_model*.safetensors", offload_device="cpu"),
-            ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="models_t5_umt5-xxl-enc-bf16.pth", offload_device="cpu"),
-            ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="Wan2.1_VAE.pth", offload_device="cpu"),
+            ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="diffusion_pytorch_model*.safetensors", offload_device="cpu", **model_config_kwargs),
+            ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="models_t5_umt5-xxl-enc-bf16.pth", offload_device="cpu", **model_config_kwargs),
+            ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="Wan2.1_VAE.pth", offload_device="cpu", **model_config_kwargs),
         ],
     )
     if args.lora_path:
@@ -65,6 +71,8 @@ if __name__ == "__main__":
     parser.add_argument("--input_video", type=str, required=True, help="Path to the input video file.")
     parser.add_argument("--output_video", type=str, required=True, help="Path to save the output video file.")
     parser.add_argument("--lora_path", type=str, default=None, help="Optional path to a LoRA model file (.safetensors).")
+    parser.add_argument("--local_model_path", type=str, default=None, help="Root directory for pretrained base models (expects Wan-AI/Wan2.1-VACE-14B underneath).")
+    parser.add_argument("--skip_model_download", action="store_true", help="Use local pretrained models only; do not download from Hugging Face.")
     parser.add_argument("--device_id", type=int, default=0, help="The ID of the CUDA device to use (e.g., 0, 1, 2).")
     parser.add_argument("--prompt", type=str, required=True, help="The positive prompt describing the target style.")
     parser.add_argument("--height", type=int, default=480, help="The height to use for video processing.")
