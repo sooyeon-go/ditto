@@ -70,8 +70,25 @@ PROMPT_SLUG_LEN=50
 
 mkdir -p "${OUTPUT_DIR}" "${LOCAL_TMP_DIR}"
 export TMPDIR="${LOCAL_TMP_DIR}"
+export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
-# ---------- Sanity checks ----------
+PYTHON="${PYTHON:-python}"
+if ! command -v "${PYTHON}" >/dev/null 2>&1; then
+    echo "[error] python not found: ${PYTHON}"
+    exit 1
+fi
+PYTHON="$(command -v "${PYTHON}")"
+
+if ! "${PYTHON}" -c "import diffsynth; print('[info] diffsynth:', diffsynth.__file__)" 2>/dev/null; then
+    echo "[error] diffsynth is not importable."
+    echo "[error] python: $("${PYTHON}" -c 'import sys; print(sys.executable)')"
+    echo "[error] PYTHONPATH: ${PYTHONPATH}"
+    echo "[error] REPO_ROOT: ${REPO_ROOT}"
+    echo "[fix]   conda activate ditto"
+    echo "[fix]   cd ${REPO_ROOT} && pip install -e ."
+    exit 1
+fi
+echo "[info] python: $("${PYTHON}" -c 'import sys; print(sys.executable)')"
 if [ ! -f "${PROMPT_YAML}" ]; then
     echo "[error] prompt file not found: ${PROMPT_YAML}"
     exit 1
@@ -109,7 +126,7 @@ echo "[info] Wan VACE:   ${WAN_MODEL_EXPECTED}"
 # ---------- Parse prompt.yaml into a tab-separated job list ----------
 # Columns: idx | src_video | level | instruction
 JOB_LIST="$(mktemp -p "${LOCAL_TMP_DIR}" physics_jobs.XXXXXX)"
-python3 - "${PROMPT_YAML}" > "${JOB_LIST}" <<'PY'
+"${PYTHON}" - "${PROMPT_YAML}" > "${JOB_LIST}" <<'PY'
 import sys
 
 prompt_path = sys.argv[1]
@@ -220,7 +237,7 @@ launch_job() {
     local log_file="${LOG_DIR}/job_${idx}_gpu${gpu_id}.log"
 
     echo "[run] gpu=${gpu_id} idx=${idx} src=${src_video} level=${level} log=${log_file}"
-    python "${REPO_ROOT}/inference/infer_ditto.py" \
+    "${PYTHON}" "${REPO_ROOT}/inference/infer_ditto.py" \
         --lora_path "${LORA_PATH}" \
         --local_model_path "${WAN_MODEL_ROOT}" \
         --skip_model_download \
