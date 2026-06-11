@@ -10,16 +10,19 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: bash infer_physics_check.sh [--gpus GPU_IDS]
+Usage: bash infer_physics_check.sh [--gpus GPU_IDS] [--quiet]
 
 Options:
   --gpus, -g   Comma-separated CUDA device IDs to use (e.g. 0,1,3).
                Defaults to all visible GPUs.
+  --quiet, -q  Suppress per-job python output (mp4 only).
 
 Environment:
   GPUS         Same as --gpus. CLI option takes precedence.
 EOF
 }
+
+QUIET=0
 
 # ---------- Paths & config ----------
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -36,6 +39,10 @@ while [[ $# -gt 0 ]]; do
             fi
             GPUS="$2"
             shift 2
+            ;;
+        --quiet|-q)
+            QUIET=1
+            shift
             ;;
         -h|--help)
             usage
@@ -197,11 +204,7 @@ if [ "${NUM_GPUS}" -lt 1 ]; then
     exit 1
 fi
 echo "[info] using ${NUM_GPUS} GPU(s): ${GPU_IDS[*]}"
-
-LOG_DIR="${OUTPUT_DIR}/logs"
-mkdir -p "${LOG_DIR}"
-echo "[info] per-job logs will be written to: ${LOG_DIR}"
-echo "[info] tail a log live with: tail -f ${LOG_DIR}/job_<idx>_gpu<id>.log"
+echo "[info] outputs will be saved to: ${OUTPUT_DIR}"
 
 make_slug() {
     local text=$1
@@ -212,8 +215,27 @@ make_slug() {
         | sed 's/^_//; s/_$//'
 }
 
+wait_batch() {
+    local batch_failed=0
+    for pid in "${PIDS[@]}"; do
+        if ! wait "${pid}"; then
+            batch_failed=$((batch_failed + 1))
+        fi
+    done
+    PIDS=()
+
+    local mp4_count
+    mp4_count=$(find "${OUTPUT_DIR}" -maxdepth 1 -name '*.mp4' 2>/dev/null | wc -l)
+    echo "[progress] ${job_idx}/${NUM_JOBS} jobs launched, ${mp4_count} mp4 saved"
+    if [ "${batch_failed}" -gt 0 ]; then
+        echo "[warn] ${batch_failed} job(s) failed in the last batch"
+        FAILED_JOBS=$((FAILED_JOBS + batch_failed))
+    fi
+}
+
 # ---------- Launcher: one inference job on one GPU ----------
 declare -a PIDS=()
+FAILED_JOBS=0
 launch_job() {
     local gpu_id=$1
     local idx=$2
@@ -234,20 +256,37 @@ launch_job() {
     slug="${slug%_}"
 
     local output_video="${OUTPUT_DIR}/${source_stem}_L${level}_${slug}.mp4"
-    local log_file="${LOG_DIR}/job_${idx}_gpu${gpu_id}.log"
 
-    echo "[run] gpu=${gpu_id} idx=${idx} src=${src_video} level=${level} log=${log_file}"
-    "${PYTHON}" "${REPO_ROOT}/inference/infer_ditto.py" \
-        --lora_path "${LORA_PATH}" \
-        --local_model_path "${WAN_MODEL_ROOT}" \
-        --skip_model_download \
-        --match_input_video \
-        --input_video "${input_video}" \
-        --output_video "${output_video}" \
-        --device_id "${gpu_id}" \
-        --seed "${SEED}" \
-        --prompt "${prompt}" \
-        > "${log_file}" 2>&1 &
+    echo "[run] gpu=${gpu_id} idx=${idx} src=${src_video} level=${level} -> ${output_video}"
+
+    if [ "${QUIET}" -eq 1 ]; then
+        "${PYTHON}" "${REPO_ROOT}/inference/infer_ditto.py" \
+            --lora_path "${LORA_PATH}" \
+            --local_model_path "${WAN_MODEL_ROOT}" \
+            --skip_model_download \
+            --match_input_video \
+            --input_video "${input_video}" \
+            --output_video "${output_video}" \
+            --device_id "${gpu_id}" \
+            --seed "${SEED}" \
+            --prompt "${prompt}" \
+            > /dev/null 2>&1 &
+    else
+        (
+            set -o pipefail
+            "${PYTHON}" "${REPO_ROOT}/inference/infer_ditto.py" \
+                --lora_path "${LORA_PATH}" \
+                --local_model_path "${WAN_MODEL_ROOT}" \
+                --skip_model_download \
+                --match_input_video \
+                --input_video "${input_video}" \
+                --output_video "${output_video}" \
+                --device_id "${gpu_id}" \
+                --seed "${SEED}" \
+                --prompt "${prompt}" \
+                2>&1 | sed -u "s/^/[job ${idx}|gpu${gpu_id}] /"
+        ) &
+    fi
     PIDS+=($!)
 }
 
@@ -260,15 +299,19 @@ while IFS=$'\t' read -r idx src_video level prompt; do
     job_idx=$((job_idx + 1))
 
     if (( job_idx % NUM_GPUS == 0 )); then
-        for pid in "${PIDS[@]}"; do wait "${pid}" || true; done
-        PIDS=()
+        wait_batch
     fi
 done < "${JOB_LIST}"
 
 # Drain the last (possibly partial) batch
-for pid in "${PIDS[@]}"; do wait "${pid}" || true; done
+if [ "${#PIDS[@]}" -gt 0 ]; then
+    wait_batch
+fi
 
 rm -f "${JOB_LIST}"
 
+if [ "${FAILED_JOBS}" -gt 0 ]; then
+    echo "[done] finished with ${FAILED_JOBS} failed job(s). results in: ${OUTPUT_DIR}"
+    exit 1
+fi
 echo "[done] results saved to: ${OUTPUT_DIR}"
-echo "[done] logs saved to:    ${LOG_DIR}"

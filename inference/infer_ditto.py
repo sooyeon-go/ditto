@@ -43,6 +43,24 @@ def probe_input_video(video_path: str) -> tuple[int, int, int, int]:
         reader.close()
 
 
+def log_device_status(pipe, device: str, stage: str) -> None:
+    gpu_id = int(device.split(":")[-1]) if ":" in device else 0
+    if torch.cuda.is_available():
+        alloc = torch.cuda.memory_allocated(gpu_id) / (1024 ** 3)
+        reserved = torch.cuda.memory_reserved(gpu_id) / (1024 ** 3)
+        print(f"[device] {stage}: cuda:{gpu_id} allocated={alloc:.2f}GB reserved={reserved:.2f}GB")
+
+    for name in ("vace", "dit", "vae", "text_encoder"):
+        model = getattr(pipe, name, None)
+        if model is None:
+            continue
+        try:
+            param = next(model.parameters())
+            print(f"[device] {stage}: {name}.parameters -> device={param.device}, dtype={param.dtype}")
+        except StopIteration:
+            pass
+
+
 def main(args):
 
     device = f"cuda:{args.device_id}"
@@ -52,16 +70,20 @@ def main(args):
         model_config_kwargs["local_model_path"] = args.local_model_path
     if args.skip_model_download:
         model_config_kwargs["skip_download"] = True
+    if not args.load_on_gpu:
+        model_config_kwargs["offload_device"] = "cpu"
 
     pipe = WanVideoPipeline.from_pretrained(
         torch_dtype=torch.bfloat16,
         device=device,
         model_configs=[
-            ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="diffusion_pytorch_model*.safetensors", offload_device="cpu", **model_config_kwargs),
-            ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="models_t5_umt5-xxl-enc-bf16.pth", offload_device="cpu", **model_config_kwargs),
-            ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="Wan2.1_VAE.pth", offload_device="cpu", **model_config_kwargs),
+            ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="diffusion_pytorch_model*.safetensors", **model_config_kwargs),
+            ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="models_t5_umt5-xxl-enc-bf16.pth", **model_config_kwargs),
+            ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="Wan2.1_VAE.pth", **model_config_kwargs),
         ],
     )
+    print(f"[device] initial load target: {'GPU ' + device if args.load_on_gpu else 'CPU (offload_device=cpu)'}")
+    log_device_status(pipe, device, "after model load")
     if args.lora_path:
         print(f"Loading Ditto LoRA model: {args.lora_path} (alpha={args.lora_alpha})")
         if not os.path.exists(args.lora_path):
@@ -70,6 +92,8 @@ def main(args):
         pipe.load_lora(pipe.vace, args.lora_path, alpha=args.lora_alpha)
 
     pipe.enable_vram_management()
+    print("[device] vram management enabled: weights mostly on CPU, computation on GPU during inference")
+    log_device_status(pipe, device, "after vram management")
 
     print(f"Loading input video: {args.input_video}")
     if not os.path.exists(args.input_video):
@@ -96,6 +120,7 @@ def main(args):
     
     reference_image = None
 
+    log_device_status(pipe, device, "before inference")
     video = pipe(
         prompt=args.prompt,
         negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
@@ -107,6 +132,7 @@ def main(args):
         seed=args.seed,
         tiled=True,
     )
+    log_device_status(pipe, device, "after inference")
 
     output_dir = os.path.dirname(args.output_video)
     if output_dir:
@@ -123,6 +149,7 @@ if __name__ == "__main__":
     parser.add_argument("--lora_path", type=str, default=None, help="Optional path to a LoRA model file (.safetensors).")
     parser.add_argument("--local_model_path", type=str, default=None, help="Root directory for pretrained base models (expects Wan-AI/Wan2.1-VACE-14B underneath).")
     parser.add_argument("--skip_model_download", action="store_true", help="Use local pretrained models only; do not download from Hugging Face.")
+    parser.add_argument("--load_on_gpu", action="store_true", help="Load base model weights directly onto GPU instead of CPU.")
     parser.add_argument("--device_id", type=int, default=0, help="The ID of the CUDA device to use (e.g., 0, 1, 2).")
     parser.add_argument("--prompt", type=str, required=True, help="The positive prompt describing the target style.")
     parser.add_argument("--height", type=int, default=480, help="The height to use for video processing.")
