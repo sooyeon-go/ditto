@@ -1,15 +1,57 @@
 #!/bin/bash
 # Batch local editing for physics_check videos using prompt.yaml.
 # Steps: ensure LoRA -> parse prompt.yaml -> detect GPUs -> run all jobs in parallel.
+#
+# Usage:
+#   bash infer_physics_check.sh
+#   bash infer_physics_check.sh --gpus 0,1
+#   GPUS=2,3 bash infer_physics_check.sh
 set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: bash infer_physics_check.sh [--gpus GPU_IDS]
+
+Options:
+  --gpus, -g   Comma-separated CUDA device IDs to use (e.g. 0,1,3).
+               Defaults to all visible GPUs.
+
+Environment:
+  GPUS         Same as --gpus. CLI option takes precedence.
+EOF
+}
 
 # ---------- Paths & config ----------
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "${REPO_ROOT}"
 
+GPUS="${GPUS:-}"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --gpus|-g)
+            if [ $# -lt 2 ]; then
+                echo "[error] --gpus requires a value (e.g. 0,1)"
+                usage
+                exit 1
+            fi
+            GPUS="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "[error] unknown argument: $1"
+            usage
+            exit 1
+            ;;
+    esac
+done
+
 PHYSICS_DIR="/data/shared-vilab/datasets/mj_data/physics_check"
 PROMPT_YAML="/data/shared-vilab/datasets/mj_data/physics_check/prompt.yaml"
-OUTPUT_DIR="$/data/project-vilab/sy/ditto/pyhsics_results"
+OUTPUT_DIR="/data/project-vilab/sy/ditto/pyhsics_results"
 
 # Pretrained model paths
 PRETRAINED_DIR="/data/shared-vilab/pretrained_models"
@@ -17,12 +59,8 @@ DITTO_MODEL_DIR="${PRETRAINED_DIR}/Ditto_models"
 WAN_MODEL_DIR="${PRETRAINED_DIR}/Wan-AI"
 LORA_PATH="${DITTO_MODEL_DIR}/ditto_local.safetensors"
 
-# Inference hyperparameters (match training resolution & frame count)
-NUM_FRAMES=73
-FPS=16
+# Inference hyperparameters
 SEED=42
-HEIGHT=480
-WIDTH=832
 
 # Local temp dir (avoid /tmp, which often lacks write permission on shared hosts)
 LOCAL_TMP_DIR="${REPO_ROOT}/tmp"
@@ -111,19 +149,37 @@ if [ "${NUM_JOBS}" -lt 1 ]; then
 fi
 echo "[info] loaded ${NUM_JOBS} editing jobs from ${PROMPT_YAML}"
 
-# ---------- Detect available GPUs ----------
-if command -v nvidia-smi >/dev/null 2>&1; then
-    NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+# ---------- Select GPUs ----------
+declare -a GPU_IDS=()
+if [ -n "${GPUS}" ]; then
+    IFS=',' read -ra _GPU_LIST <<< "${GPUS}"
+    for gpu in "${_GPU_LIST[@]}"; do
+        gpu="${gpu//[[:space:]]/}"
+        if [ -z "${gpu}" ]; then
+            continue
+        fi
+        if ! [[ "${gpu}" =~ ^[0-9]+$ ]]; then
+            echo "[error] invalid GPU id: ${gpu}"
+            rm -f "${JOB_LIST}"
+            exit 1
+        fi
+        GPU_IDS+=("${gpu}")
+    done
 else
-    NUM_GPUS=0
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        while IFS= read -r gpu; do
+            GPU_IDS+=("${gpu}")
+        done < <(nvidia-smi --query-gpu=index --format=csv,noheader)
+    fi
 fi
-echo "[info] detected ${NUM_GPUS} GPU(s)"
 
+NUM_GPUS=${#GPU_IDS[@]}
 if [ "${NUM_GPUS}" -lt 1 ]; then
-    echo "[error] no GPU detected"
+    echo "[error] no GPU selected"
     rm -f "${JOB_LIST}"
     exit 1
 fi
+echo "[info] using ${NUM_GPUS} GPU(s): ${GPU_IDS[*]}"
 
 LOG_DIR="${OUTPUT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
@@ -168,14 +224,11 @@ launch_job() {
         --lora_path "${LORA_PATH}" \
         --local_model_path "${WAN_MODEL_ROOT}" \
         --skip_model_download \
+        --match_input_video \
         --input_video "${input_video}" \
         --output_video "${output_video}" \
         --device_id "${gpu_id}" \
-        --num_frames "${NUM_FRAMES}" \
-        --fps "${FPS}" \
         --seed "${SEED}" \
-        --height "${HEIGHT}" \
-        --width "${WIDTH}" \
         --prompt "${prompt}" \
         > "${log_file}" 2>&1 &
     PIDS+=($!)
@@ -185,7 +238,7 @@ launch_job() {
 # Round-robin jobs across GPUs; wait for each full batch before starting the next.
 job_idx=0
 while IFS=$'\t' read -r idx src_video level prompt; do
-    gpu_id=$((job_idx % NUM_GPUS))
+    gpu_id="${GPU_IDS[$((job_idx % NUM_GPUS))]}"
     launch_job "${gpu_id}" "${idx}" "${src_video}" "${level}" "${prompt}"
     job_idx=$((job_idx + 1))
 

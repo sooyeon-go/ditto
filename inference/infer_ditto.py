@@ -1,8 +1,46 @@
 import argparse
 import torch
 import os
+import imageio
 from diffsynth import save_video, VideoData
 from diffsynth.pipelines.wan_video_new import WanVideoPipeline, ModelConfig
+
+TIME_DIVISION_FACTOR = 4
+TIME_DIVISION_REMAINDER = 1
+
+
+def align_num_frames(frame_count: int) -> int:
+    """Round down to the largest count compatible with Wan VACE (4n + 1)."""
+    if frame_count < 1:
+        raise ValueError("input video has no frames")
+    if frame_count % TIME_DIVISION_FACTOR == TIME_DIVISION_REMAINDER:
+        return frame_count
+    aligned = ((frame_count - TIME_DIVISION_REMAINDER) // TIME_DIVISION_FACTOR) * TIME_DIVISION_FACTOR + TIME_DIVISION_REMAINDER
+    return max(TIME_DIVISION_REMAINDER, aligned)
+
+
+def probe_input_video(video_path: str) -> tuple[int, int, int, int]:
+    reader = imageio.get_reader(video_path)
+    try:
+        meta = reader.get_meta_data()
+        fps = meta.get("fps", 16)
+        if fps is None or fps <= 0:
+            fps = 16
+        fps = max(1, int(round(fps)))
+
+        frame_count = reader.count_frames()
+        num_frames = align_num_frames(frame_count)
+        if num_frames != frame_count:
+            print(
+                f"Adjusted num_frames from {frame_count} to {num_frames} "
+                f"(must satisfy {TIME_DIVISION_FACTOR}n + {TIME_DIVISION_REMAINDER})"
+            )
+
+        first_frame = reader.get_data(0)
+        height, width = first_frame.shape[:2]
+        return height, width, num_frames, fps
+    finally:
+        reader.close()
 
 
 def main(args):
@@ -37,13 +75,23 @@ def main(args):
     if not os.path.exists(args.input_video):
         print(f"Error: Input video file not found at {args.input_video}")
         return
-        
-    video = VideoData(args.input_video, height=args.height, width=args.width)
-    
-    num_frames = min(args.num_frames, len(video))
-    if num_frames != args.num_frames:
-        print(f"Warning: Requested number of frames ({args.num_frames}) exceeds total video frames ({len(video)}). Using {num_frames} frames instead.")
-        
+
+    if args.match_input_video:
+        height, width, num_frames, fps = probe_input_video(args.input_video)
+        print(f"Matched input video: {width}x{height}, {num_frames} frames, {fps} fps")
+    else:
+        height, width, num_frames, fps = args.height, args.width, args.num_frames, args.fps
+
+    video = VideoData(args.input_video, height=height, width=width)
+
+    available_frames = len(video)
+    if num_frames > available_frames:
+        num_frames = align_num_frames(available_frames)
+        print(
+            f"Warning: requested frame count exceeds video length ({available_frames}). "
+            f"Using {num_frames} frames instead."
+        )
+
     video = [video[i] for i in range(num_frames)]
     
     reference_image = None
@@ -53,6 +101,8 @@ def main(args):
         negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
         vace_video=video,
         vace_reference_image=reference_image,
+        height=height,
+        width=width,
         num_frames=num_frames,
         seed=args.seed,
         tiled=True,
@@ -62,7 +112,7 @@ def main(args):
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
     
-    save_video(video, args.output_video, fps=args.fps, quality=args.quality)
+    save_video(video, args.output_video, fps=fps, quality=args.quality)
 
 
 if __name__ == "__main__":
@@ -78,6 +128,7 @@ if __name__ == "__main__":
     parser.add_argument("--height", type=int, default=480, help="The height to use for video processing.")
     parser.add_argument("--width", type=int, default=832, help="The width to use for video processing.")
     parser.add_argument("--num_frames", type=int, default=73, help="The number of video frames to process.")
+    parser.add_argument("--match_input_video", action="store_true", help="Use each input video's native resolution, frame count, and fps.")
     parser.add_argument("--seed", type=int, default=1, help="Random seed for reproducible results.")
 
     parser.add_argument("--lora_alpha", type=float, default=1.0, help="The alpha (weight) value for the LoRA model.")
