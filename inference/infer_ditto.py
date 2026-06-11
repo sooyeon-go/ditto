@@ -83,6 +83,25 @@ def ensure_cuda_device(device_id: int) -> str:
     return device
 
 
+def resolve_tokenizer_config(local_model_path: str | None, skip_download: bool) -> ModelConfig:
+    kwargs = {}
+    if local_model_path:
+        kwargs["local_model_path"] = local_model_path
+    if skip_download:
+        kwargs["skip_download"] = True
+
+    candidate_ids = ["Wan-AI/Wan2.1-VACE-14B", "Wan-AI/Wan2.1-T2V-1.3B"]
+    if local_model_path:
+        for model_id in candidate_ids:
+            google_dir = os.path.join(local_model_path, model_id, "google")
+            if os.path.isdir(google_dir) and os.listdir(google_dir):
+                print(f"[info] using local tokenizer: {google_dir}")
+                return ModelConfig(model_id=model_id, origin_file_pattern="google/*", **kwargs)
+
+    print("[warn] local tokenizer not found; may download google/umt5-xxl tokenizer")
+    return ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="google/*", **kwargs)
+
+
 def main(args):
 
     device = ensure_cuda_device(args.device_id)
@@ -95,6 +114,8 @@ def main(args):
     if not args.load_on_gpu:
         model_config_kwargs["offload_device"] = "cpu"
 
+    tokenizer_config = resolve_tokenizer_config(args.local_model_path, args.skip_model_download)
+
     pipe = WanVideoPipeline.from_pretrained(
         torch_dtype=torch.bfloat16,
         device=device,
@@ -103,6 +124,7 @@ def main(args):
             ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="models_t5_umt5-xxl-enc-bf16.pth", **model_config_kwargs),
             ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="Wan2.1_VAE.pth", **model_config_kwargs),
         ],
+        tokenizer_config=tokenizer_config,
         redirect_common_files=False,
     )
     print(f"[device] initial load target: {'GPU ' + device if args.load_on_gpu else 'CPU (offload_device=cpu)'}")

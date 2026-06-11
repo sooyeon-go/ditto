@@ -81,10 +81,15 @@ SEED=42
 LOCAL_TMP_DIR="${REPO_ROOT}/tmp"
 
 # Output filename = "<src_stem>_L<level>_<prompt slug>.mp4"
-PROMPT_SLUG_LEN=50
+# Slug is for filesystem only; full prompt is still passed to inference unchanged.
+PROMPT_SLUG_LEN="${PROMPT_SLUG_LEN:-120}"
+USE_JOB_ID_FILENAME="${USE_JOB_ID_FILENAME:-0}"
 
 mkdir -p "${OUTPUT_DIR}" "${LOCAL_TMP_DIR}"
-export TMPDIR="${LOCAL_TMP_DIR}"
+MANIFEST_TSV="${OUTPUT_DIR}/job_manifest.tsv"
+if [ ! -f "${MANIFEST_TSV}" ]; then
+    printf 'idx\tsrc_video\tlevel\tprompt_chars\toutput_video\tprompt\n' > "${MANIFEST_TSV}"
+fi
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
 PYTHON="${PYTHON:-python}"
@@ -147,7 +152,15 @@ for required_file in \
         exit 1
     fi
 done
-echo "[info] Wan T5/VAE/diffusion weights found under ${WAN_MODEL_EXPECTED}"
+
+TOKENIZER_DIR="${WAN_MODEL_EXPECTED}/google"
+if [ ! -d "${TOKENIZER_DIR}" ] || [ -z "$(ls -A "${TOKENIZER_DIR}" 2>/dev/null)" ]; then
+    echo "[error] missing tokenizer files: ${TOKENIZER_DIR}"
+    echo "[error] expected google/umt5-xxl tokenizer inside Wan2.1-VACE-14B"
+    echo "[fix]   hf download Wan-AI/Wan2.1-VACE-14B --include=\"google/*\" --local-dir ${PRETRAINED_DIR}/Wan-AI/"
+    exit 1
+fi
+echo "[info] Wan T5/VAE/diffusion/tokenizer found under ${WAN_MODEL_EXPECTED}"
 
 # ---------- Parse prompt.yaml into a tab-separated job list ----------
 # Columns: idx | src_video | level | instruction
@@ -261,6 +274,7 @@ make_slug() {
     local text=$1
     printf '%s' "${text}" \
         | tr '[:upper:]' '[:lower:]' \
+        | tr '.' '_' \
         | tr -c 'a-z0-9._-' '_' \
         | tr -s '_' \
         | sed 's/^_//; s/_$//'
@@ -301,14 +315,22 @@ launch_job() {
     fi
 
     local source_stem="${src_video%.*}"
-    local slug
-    slug="$(make_slug "${prompt}")"
-    slug="${slug:0:${PROMPT_SLUG_LEN}}"
-    slug="${slug%_}"
+    local output_video
+    if [ "${USE_JOB_ID_FILENAME}" = "1" ]; then
+        output_video="${OUTPUT_DIR}/${source_stem}_L${level}_job$(printf '%03d' "${idx}").mp4"
+    else
+        local slug
+        slug="$(make_slug "${prompt}")"
+        slug="${slug:0:${PROMPT_SLUG_LEN}}"
+        slug="${slug%_}"
+        output_video="${OUTPUT_DIR}/${source_stem}_L${level}_${slug}.mp4"
+    fi
 
-    local output_video="${OUTPUT_DIR}/${source_stem}_L${level}_${slug}.mp4"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "${idx}" "${src_video}" "${level}" "${#prompt}" "${output_video}" "${prompt}" \
+        >> "${MANIFEST_TSV}"
 
-    echo "[run] gpu=${gpu_id} idx=${idx} src=${src_video} level=${level} -> ${output_video}"
+    echo "[run] gpu=${gpu_id} idx=${idx} src=${src_video} level=${level} prompt_chars=${#prompt} -> ${output_video}"
 
     if [ "${QUIET}" -eq 1 ]; then
         "${PYTHON}" "${REPO_ROOT}/inference/infer_ditto.py" \
