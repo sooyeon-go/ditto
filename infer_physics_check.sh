@@ -16,13 +16,17 @@ Options:
   --gpus, -g   Comma-separated CUDA device IDs to use (e.g. 0,1,3).
                Defaults to all visible GPUs.
   --quiet, -q  Suppress per-job python output (mp4 only).
+  --load-on-gpu
+               Load model weights directly onto GPU (needs large VRAM).
 
 Environment:
   GPUS         Same as --gpus. CLI option takes precedence.
+  LOAD_ON_GPU  Set to 1 to enable --load-on-gpu.
 EOF
 }
 
 QUIET=0
+LOAD_ON_GPU=0
 
 # ---------- Paths & config ----------
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -42,6 +46,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --quiet|-q)
             QUIET=1
+            shift
+            ;;
+        --load-on-gpu)
+            LOAD_ON_GPU=1
             shift
             ;;
         -h|--help)
@@ -130,6 +138,17 @@ fi
 echo "[info] Ditto LoRA: ${LORA_PATH}"
 echo "[info] Wan VACE:   ${WAN_MODEL_EXPECTED}"
 
+for required_file in \
+    "models_t5_umt5-xxl-enc-bf16.pth" \
+    "Wan2.1_VAE.pth" \
+    "diffusion_pytorch_model-00001-of-00007.safetensors"; do
+    if [ ! -f "${WAN_MODEL_EXPECTED}/${required_file}" ]; then
+        echo "[error] missing Wan model file: ${WAN_MODEL_EXPECTED}/${required_file}"
+        exit 1
+    fi
+done
+echo "[info] Wan T5/VAE/diffusion weights found under ${WAN_MODEL_EXPECTED}"
+
 # ---------- Parse prompt.yaml into a tab-separated job list ----------
 # Columns: idx | src_video | level | instruction
 JOB_LIST="$(mktemp -p "${LOCAL_TMP_DIR}" physics_jobs.XXXXXX)"
@@ -206,6 +225,38 @@ fi
 echo "[info] using ${NUM_GPUS} GPU(s): ${GPU_IDS[*]}"
 echo "[info] outputs will be saved to: ${OUTPUT_DIR}"
 
+# Verify selected CUDA devices exist before launching jobs.
+"${PYTHON}" - "${GPU_IDS[@]}" <<'PY'
+import sys
+import torch
+
+gpu_ids = [int(x) for x in sys.argv[1:]]
+if not torch.cuda.is_available():
+    raise SystemExit("[error] CUDA is not available")
+
+count = torch.cuda.device_count()
+print(f"[info] torch sees {count} CUDA device(s)")
+for gpu_id in gpu_ids:
+    if gpu_id < 0 or gpu_id >= count:
+        raise SystemExit(
+            f"[error] GPU {gpu_id} is invalid. Valid device ids: 0-{count - 1}"
+        )
+    props = torch.cuda.get_device_properties(gpu_id)
+    print(f"[info] cuda:{gpu_id} -> {props.name} ({props.total_memory / 1024**3:.1f} GB)")
+PY
+
+LOAD_ON_GPU="${LOAD_ON_GPU:-0}"
+if [ "${LOAD_ON_GPU}" = "1" ]; then
+    echo "[info] load mode: GPU direct (--load-on-gpu)"
+else
+    echo "[info] load mode: CPU first, GPU for inference (default; high CPU during model load)"
+fi
+
+INFER_EXTRA_ARGS=()
+if [ "${LOAD_ON_GPU}" = "1" ]; then
+    INFER_EXTRA_ARGS+=(--load_on_gpu)
+fi
+
 make_slug() {
     local text=$1
     printf '%s' "${text}" \
@@ -270,6 +321,7 @@ launch_job() {
             --device_id "${gpu_id}" \
             --seed "${SEED}" \
             --prompt "${prompt}" \
+            "${INFER_EXTRA_ARGS[@]}" \
             > /dev/null 2>&1 &
     else
         (
@@ -284,6 +336,7 @@ launch_job() {
                 --device_id "${gpu_id}" \
                 --seed "${SEED}" \
                 --prompt "${prompt}" \
+                "${INFER_EXTRA_ARGS[@]}" \
                 2>&1 | sed -u "s/^/[job ${idx}|gpu${gpu_id}] /"
         ) &
     fi

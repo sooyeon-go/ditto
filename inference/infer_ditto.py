@@ -61,9 +61,31 @@ def log_device_status(pipe, device: str, stage: str) -> None:
             pass
 
 
+def ensure_cuda_device(device_id: int) -> str:
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is not available. Ditto inference requires a GPU.")
+
+    device_count = torch.cuda.device_count()
+    if device_id < 0 or device_id >= device_count:
+        raise RuntimeError(
+            f"Invalid --device_id {device_id}. "
+            f"This machine exposes cuda devices 0-{device_count - 1} only."
+        )
+
+    props = torch.cuda.get_device_properties(device_id)
+    device = f"cuda:{device_id}"
+    print(
+        f"[device] target GPU: {device} ({props.name}, "
+        f"{props.total_memory / (1024 ** 3):.1f} GB)"
+    )
+    torch.zeros(1, device=device)
+    print(f"[device] cuda sanity check passed on {device}")
+    return device
+
+
 def main(args):
 
-    device = f"cuda:{args.device_id}"
+    device = ensure_cuda_device(args.device_id)
 
     model_config_kwargs = {}
     if args.local_model_path:
@@ -81,6 +103,7 @@ def main(args):
             ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="models_t5_umt5-xxl-enc-bf16.pth", **model_config_kwargs),
             ModelConfig(model_id="Wan-AI/Wan2.1-VACE-14B", origin_file_pattern="Wan2.1_VAE.pth", **model_config_kwargs),
         ],
+        redirect_common_files=False,
     )
     print(f"[device] initial load target: {'GPU ' + device if args.load_on_gpu else 'CPU (offload_device=cpu)'}")
     log_device_status(pipe, device, "after model load")
